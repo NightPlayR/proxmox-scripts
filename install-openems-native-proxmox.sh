@@ -3,7 +3,7 @@
 # Run as root ON a Proxmox VE x86_64 node.
 set -Eeuo pipefail
 
-VMID="${VMID:-230}"
+VMID="${VMID:-411}"
 VMNAME="${VMNAME:-openems-poc}"
 STORAGE="${STORAGE:-local-lvm}"
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
