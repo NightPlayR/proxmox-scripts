@@ -3,7 +3,7 @@
 # Run as root ON a Proxmox VE x86_64 node.
 set -Eeuo pipefail
 
-VMID="${VMID:-411}"
+VMID="${VMID:-230}"
 VMNAME="${VMNAME:-openems-poc}"
 STORAGE="${STORAGE:-local-lvm}"
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
@@ -17,6 +17,25 @@ IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-gener
 WORKDIR="/var/tmp/openems-poc-${VMID}"
 SNIPPET_NAME="openems-native-${VMID}.yaml"
 
+# Interactive setup (defaults can still be supplied as environment variables).
+choose_value() {
+  local label="$1" default="$2" response
+  read -r -p "$label [$default]: " response
+  printf '%s' "${response:-$default}"
+}
+choose_from_list() {
+  local label="$1" default="$2"; shift 2
+  local options=("$@") i choice
+  [[ ${#options[@]} -gt 0 ]] || die "No options available for $label"
+  echo >&2
+  echo "$label:" >&2
+  for i in "${!options[@]}"; do printf '  %d) %s\n' "$((i+1))" "${options[i]}" >&2; done
+  read -r -p "Number (Enter for $default): " choice
+  if [[ -z "$choice" ]]; then printf '%s' "$default"; return; fi
+  [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})) || die "Invalid selection"
+  printf '%s' "${options[choice-1]}"
+}
+
 log(){ printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die(){ echo "ERROR: $*" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || die "Run as root on Proxmox"
@@ -24,6 +43,42 @@ die(){ echo "ERROR: $*" >&2; exit 1; }
 command -v qm >/dev/null || die "qm missing; run on Proxmox VE node"
 command -v pvesm >/dev/null || die "pvesm missing"
 command -v curl >/dev/null || die "curl missing"
+# Ask for settings BEFORE creating or modifying anything.
+if [[ "${INTERACTIVE:-yes}" == yes ]]; then
+  echo "OpenEMS native PoC - Proxmox VM configuration"
+  VMID="$(choose_value 'VM ID' "$VMID")"
+  VMNAME="$(choose_value 'VM name' "$VMNAME")"
+
+  mapfile -t disk_storages < <(pvesm status --content images | awk 'NR>1 {print $1}')
+  [[ ${#disk_storages[@]} -gt 0 ]] || die 'No storage with Disk image content available'
+  disk_default="$STORAGE"
+  [[ " ${disk_storages[*]} " == *" $disk_default "* ]] || disk_default="${disk_storages[0]}"
+  STORAGE="$(choose_from_list 'VM disk storage' "$disk_default" "${disk_storages[@]}")"
+
+  mapfile -t snippet_storages < <(pvesm status --content snippets | awk 'NR>1 {print $1}')
+  [[ ${#snippet_storages[@]} -gt 0 ]] || die 'No storage with Snippets content available; enable Snippets in Datacenter > Storage'
+  snippet_default="$SNIPPET_STORAGE"
+  [[ " ${snippet_storages[*]} " == *" $snippet_default "* ]] || snippet_default="${snippet_storages[0]}"
+  SNIPPET_STORAGE="$(choose_from_list 'Cloud-init snippet storage' "$snippet_default" "${snippet_storages[@]}")"
+
+  mapfile -t bridges < <(find /sys/class/net -mindepth 1 -maxdepth 1 -type l -printf '%f\n' | grep -E '^(vmbr|br)[A-Za-z0-9_.-]*$' | sort || true)
+  if [[ ${#bridges[@]} -gt 0 ]]; then
+    bridge_default="$BRIDGE"
+    [[ " ${bridges[*]} " == *" $bridge_default "* ]] || bridge_default="${bridges[0]}"
+    BRIDGE="$(choose_from_list 'Network bridge' "$bridge_default" "${bridges[@]}")"
+  else
+    BRIDGE="$(choose_value 'Network bridge' "$BRIDGE")"
+  fi
+
+  CORES="$(choose_value 'CPU cores' "$CORES")"
+  MEMORY="$(choose_value 'RAM in MB' "$MEMORY")"
+  DISK_GB="$(choose_value 'Disk size in GB' "$DISK_GB")"
+  SSH_PUBKEY="$(choose_value 'SSH public key path' "$SSH_PUBKEY")"
+  OPENEMS_VERSION="$(choose_value 'OpenEMS release tag' "$OPENEMS_VERSION")"
+fi
+WORKDIR="/var/tmp/openems-poc-${VMID}"
+SNIPPET_NAME="openems-native-${VMID}.yaml"
+
 [[ "$VMID" =~ ^[0-9]+$ ]] || die "VMID must be numeric"
 [[ "$DISK_GB" =~ ^[0-9]+$ ]] || die "DISK_GB must be numeric"
 qm status "$VMID" >/dev/null 2>&1 && die "VMID $VMID already exists: nothing changed"
